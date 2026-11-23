@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="108" fill="#18181B"/>
+  <!-- Outer crop marks -->
+  <g stroke="#71717A" stroke-width="10" stroke-linecap="round">
+    <path d="M96 128 V96 H128"/>
+    <path d="M416 128 V96 H384"/>
+    <path d="M96 384 V416 H128"/>
+    <path d="M416 384 V416 H384"/>
+  </g>
+  <!-- 2x2 N-Up print sheet tiles -->
+  <rect x="128" y="128" width="114" height="114" rx="16" fill="#FFFFFF"/>
+  <rect x="270" y="128" width="114" height="114" rx="16" fill="#2563EB"/>
+  <rect x="128" y="270" width="114" height="114" rx="16" fill="#FFFFFF"/>
+  <rect x="270" y="270" width="114" height="114" rx="16" fill="#FFFFFF"/>
+</svg>

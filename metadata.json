@@ -1,0 +1,6 @@
+{
+  "name": "SheetPress — N-Up Print Sheet & High-Res PDF Studio",
+  "description": "Arrange and repeat images on printable grids with live preview and export high-resolution PDFs completely offline.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
