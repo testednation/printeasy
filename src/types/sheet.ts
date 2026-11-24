@@ -15,6 +15,13 @@ export interface PaperDefinition {
   subtitle: string;
 }
 
+export interface ImageCrop {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface SheetImage {
   id: string;
   name: string;
@@ -24,6 +31,7 @@ export interface SheetImage {
   copies: number;
   rotation: 0 | 90 | 180 | 270;
   filter?: ImageFilter;
+  crop?: ImageCrop;
 }
 
 export interface LayoutSettings {
@@ -36,6 +44,7 @@ export interface LayoutSettings {
   marginMm: number;
   gapMm: number;
   fitMode: FitMode;
+  lockAspectRatio: boolean;
   autoRotate: boolean;
   guideStyle: GuideStyle;
   guideColor: string;

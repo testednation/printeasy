@@ -145,6 +145,7 @@ export const DEFAULT_SETTINGS: LayoutSettings = {
   marginMm: 10,
   gapMm: 5,
   fitMode: 'cover',
+  lockAspectRatio: true,
   autoRotate: false,
   guideStyle: 'cropMarks',
   guideColor: '#71717A',
@@ -251,6 +252,15 @@ export function computeSheetGeometry(settings: LayoutSettings): SheetGeometry {
 }
 
 /**
+ * Returns effective source pixel dimensions after applying any non-destructive manual crop.
+ */
+export function getCroppedSourceDimensions(image: SheetImage): { width: number; height: number } {
+  const w = image.crop ? Math.max(1, Math.round(image.naturalWidth * image.crop.width)) : image.naturalWidth;
+  const h = image.crop ? Math.max(1, Math.round(image.naturalHeight * image.crop.height)) : image.naturalHeight;
+  return { width: w, height: h };
+}
+
+/**
  * Determines final rotation (0/90/180/270) taking manual rotation + optional auto-rotate into account.
  */
 export function resolveEffectiveRotation(
@@ -262,9 +272,10 @@ export function resolveEffectiveRotation(
   let rot = image.rotation;
   if (!autoRotate) return rot;
 
+  const cropped = getCroppedSourceDimensions(image);
   const isSwapped = rot === 90 || rot === 270;
-  const currentW = isSwapped ? image.naturalHeight : image.naturalWidth;
-  const currentH = isSwapped ? image.naturalWidth : image.naturalHeight;
+  const currentW = isSwapped ? cropped.height : cropped.width;
+  const currentH = isSwapped ? cropped.width : cropped.height;
 
   const imageIsLandscape = currentW > currentH * 1.05;
   const imageIsPortrait = currentH > currentW * 1.05;
@@ -292,9 +303,10 @@ export function computeSlotImageMetrics(
   effectiveDpi: number;
   isLowRes: boolean;
 } {
+  const cropped = getCroppedSourceDimensions(image);
   const swapped = effectiveRotation === 90 || effectiveRotation === 270;
-  const srcW = Math.max(1, swapped ? image.naturalHeight : image.naturalWidth);
-  const srcH = Math.max(1, swapped ? image.naturalWidth : image.naturalHeight);
+  const srcW = Math.max(1, swapped ? cropped.height : cropped.width);
+  const srcH = Math.max(1, swapped ? cropped.width : cropped.height);
   const srcAspect = srcW / srcH;
   const cellAspect = cellWidthMm / cellHeightMm;
 
@@ -418,11 +430,13 @@ export function computePages(
           geometry.cellHeightMm,
           settings.autoRotate
         );
+        const effectiveFitMode: FitMode =
+          settings.lockAspectRatio && settings.fitMode === 'stretch' ? 'cover' : settings.fitMode;
         const metrics = computeSlotImageMetrics(
           entry.image,
           geometry.cellWidthMm,
           geometry.cellHeightMm,
-          settings.fitMode,
+          effectiveFitMode,
           effectiveRotation,
           settings.dpi
         );
@@ -524,9 +538,10 @@ function evaluateGridCandidate(
   let effectiveAreaSum = 0;
   for (const img of slotImages) {
     const effRot = resolveEffectiveRotation(img, geom.cellWidthMm, geom.cellHeightMm, settings.autoRotate);
+    const cropped = getCroppedSourceDimensions(img);
     const swapped = effRot === 90 || effRot === 270;
-    const w = Math.max(1, swapped ? img.naturalHeight : img.naturalWidth);
-    const h = Math.max(1, swapped ? img.naturalWidth : img.naturalHeight);
+    const w = Math.max(1, swapped ? cropped.height : cropped.width);
+    const h = Math.max(1, swapped ? cropped.width : cropped.height);
     const imgAspect = w / h;
     // Exact area utilization ratio (1.0 when image aspect matches cell aspect perfectly)
     const aspectFit = Math.min(imgAspect / cellAspect, cellAspect / imgAspect);
@@ -553,9 +568,10 @@ export function analyzeOptimalGrid(
   let aspectWeightSum = 0;
   let totalWeight = 0;
   for (const img of images) {
+    const cropped = getCroppedSourceDimensions(img);
     const swapped = img.rotation === 90 || img.rotation === 270;
-    const w = Math.max(1, swapped ? img.naturalHeight : img.naturalWidth);
-    const h = Math.max(1, swapped ? img.naturalWidth : img.naturalHeight);
+    const w = Math.max(1, swapped ? cropped.height : cropped.width);
+    const h = Math.max(1, swapped ? cropped.width : cropped.height);
     const weight = settings.repeatBehavior === 'perImage' ? Math.max(1, img.copies) : 1;
     aspectWeightSum += (w / h) * weight;
     totalWeight += weight;

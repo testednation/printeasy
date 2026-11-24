@@ -5,6 +5,7 @@ import {
   ArrowRight,
   ArrowUp,
   Check,
+  Crop,
   FileDown,
   FolderOpen,
   GripVertical,
@@ -12,6 +13,7 @@ import {
   ImagePlus,
   Layers,
   LayoutGrid,
+  Lock,
   Minus,
   Plus,
   RotateCw,
@@ -19,6 +21,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Trash2,
+  Unlock,
 } from 'lucide-react';
 import type {
   ExportDpi,
@@ -26,6 +29,7 @@ import type {
   GridPreset,
   GridSuggestion,
   GuideStyle,
+  ImageCrop,
   ImageFilter,
   LayoutSettings,
   PaperSizeKey,
@@ -35,11 +39,14 @@ import type {
 import {
   analyzeOptimalGrid,
   formatDimensions,
+  getCroppedSourceDimensions,
   getImageCssFilter,
   GRID_PRESETS,
   IMAGE_FILTER_OPTIONS,
   PAPER_DEFINITIONS,
 } from '../utils/layoutEngine';
+import { isFullCrop, useProcessedPreviewUrl } from '../utils/processedPreview';
+import { ImageCropPanel } from './ImageCropPanel';
 
 export type SidebarTab = 'images' | 'layout' | 'print';
 
@@ -56,12 +63,14 @@ interface SidebarControlsProps {
   onLoadSamples: () => void;
   onUpdateImageCopies: (id: string, copies: number) => void;
   onUpdateImageFilter: (id: string, filter: ImageFilter) => void;
+  onUpdateImageCrop: (id: string, crop: ImageCrop | undefined) => void;
   onSetAllCopies: (copies: number) => void;
   onRotateImage: (id: string) => void;
   onRemoveImage: (id: string) => void;
   onClearAllImages: () => void;
   onReorderImages: (fromIndex: number, toIndex: number) => void;
   onUpdateSettings: (patch: Partial<LayoutSettings>) => void;
+  onToggleAspectLock: () => void;
   onApplyPreset: (preset: GridPreset) => void;
   onApplyGridSuggestion: (suggestion: GridSuggestion) => void;
   onAutoOrientAllImages: () => void;
@@ -173,6 +182,19 @@ const MiniGuideIcon: React.FC<{ style: GuideStyle; active: boolean }> = ({ style
   );
 };
 
+const PhotoCardThumbnail: React.FC<{ image: SheetImage }> = ({ image }) => {
+  const thumbUrl = useProcessedPreviewUrl(image.dataUrl, image.rotation, image.crop);
+  return (
+    <img
+      src={thumbUrl}
+      alt={image.name}
+      referrerPolicy="no-referrer"
+      style={{ filter: getImageCssFilter(image.filter) }}
+      className="h-full w-full object-cover"
+    />
+  );
+};
+
 export const SidebarControls: React.FC<SidebarControlsProps> = ({
   activeTab,
   onTabChange,
@@ -186,12 +208,14 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
   onLoadSamples,
   onUpdateImageCopies,
   onUpdateImageFilter,
+  onUpdateImageCrop,
   onSetAllCopies,
   onRotateImage,
   onRemoveImage,
   onClearAllImages,
   onReorderImages,
   onUpdateSettings,
+  onToggleAspectLock,
   onApplyPreset,
   onApplyGridSuggestion,
   onAutoOrientAllImages,
@@ -202,9 +226,11 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [gridSuggestion, setGridSuggestion] = useState<GridSuggestion | null>(null);
+  const [croppingImageId, setCroppingImageId] = useState<string | null>(null);
 
   const isSimple = settings.beginnerMode;
   const totalCopies = images.reduce((sum, img) => sum + img.copies, 0);
+  const slotAspect = geometry.cellWidthMm / Math.max(0.1, geometry.cellHeightMm);
 
   const handleAnalyzeBestGrid = () => {
     const result = analyzeOptimalGrid(images, settings);
@@ -221,9 +247,10 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
 
   const rotatableCount = images.reduce((count, img) => {
     if (!slotIsLandscape && !slotIsPortrait) return count;
+    const cropped = getCroppedSourceDimensions(img);
     const swapped = img.rotation === 90 || img.rotation === 270;
-    const curW = swapped ? img.naturalHeight : img.naturalWidth;
-    const curH = swapped ? img.naturalWidth : img.naturalHeight;
+    const curW = swapped ? cropped.height : cropped.width;
+    const curH = swapped ? cropped.width : cropped.height;
     const imgIsLandscape = curW > curH * 1.02;
     const imgIsPortrait = curH > curW * 1.02;
     if ((slotIsLandscape && imgIsPortrait) || (slotIsPortrait && imgIsLandscape)) {
@@ -464,7 +491,7 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
                     return (
                       <div
                         key={img.id}
-                        draggable
+                        draggable={croppingImageId !== img.id}
                         onDragStart={(e) => {
                           e.dataTransfer.effectAllowed = 'move';
                           setDragIndex(index);
@@ -497,23 +524,18 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
                         <div className="flex items-center gap-2.5">
                           <GripVertical className="w-3.5 h-3.5 text-zinc-400 shrink-0 cursor-grab" />
                           <div className="h-11 w-11 shrink-0 overflow-hidden rounded border border-zinc-200 bg-zinc-100">
-                            <img
-                              src={img.dataUrl}
-                              alt={img.name}
-                              referrerPolicy="no-referrer"
-                              style={{
-                                transform: `rotate(${img.rotation}deg)`,
-                                filter: getImageCssFilter(img.filter),
-                              }}
-                              className="h-full w-full object-cover transition-transform duration-150"
-                            />
+                            <PhotoCardThumbnail image={img} />
                           </div>
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-xs font-medium text-zinc-900">
                               {img.name}
                             </p>
                             <p className="mt-0.5 font-mono text-[10px] tabular-nums text-zinc-500">
-                              {img.naturalWidth}×{img.naturalHeight} px
+                              {(() => {
+                                const dims = getCroppedSourceDimensions(img);
+                                return `${dims.width}×${dims.height} px`;
+                              })()}
+                              {!isFullCrop(img.crop) ? ' · Cropped' : ''}
                               {img.rotation !== 0 ? ` · ${img.rotation}°` : ''}
                               {img.filter && img.filter !== 'none'
                                 ? ` · ${IMAGE_FILTER_OPTIONS.find((f) => f.key === img.filter)?.label || img.filter}`
@@ -521,6 +543,21 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
                             </p>
                           </div>
                         </div>
+
+                        {/* Inline Manual Cropping Tool */}
+                        {croppingImageId === img.id && (
+                          <div className="mt-2.5">
+                            <ImageCropPanel
+                              image={img}
+                              slotAspect={slotAspect}
+                              onApply={(nextCrop) => {
+                                onUpdateImageCrop(img.id, nextCrop);
+                                setCroppingImageId(null);
+                              }}
+                              onClose={() => setCroppingImageId(null)}
+                            />
+                          </div>
+                        )}
 
                         {/* Individual Photo Filter Strip */}
                         <div
@@ -591,6 +628,20 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
                           <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
                             <button
                               type="button"
+                              title="Crop image"
+                              onClick={() =>
+                                setCroppingImageId((prev) => (prev === img.id ? null : img.id))
+                              }
+                              className={`rounded p-1.5 transition-colors cursor-pointer ${
+                                croppingImageId === img.id || !isFullCrop(img.crop)
+                                  ? 'bg-blue-50 text-blue-600'
+                                  : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900'
+                              }`}
+                            >
+                              <Crop className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
                               disabled={index === 0}
                               title="Move earlier"
                               onClick={() => onReorderImages(index, index - 1)}
@@ -618,7 +669,10 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
                             <button
                               type="button"
                               title="Remove photo"
-                              onClick={() => onRemoveImage(img.id)}
+                              onClick={() => {
+                                if (croppingImageId === img.id) setCroppingImageId(null);
+                                onRemoveImage(img.id);
+                              }}
                               className="rounded p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-600 cursor-pointer"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -1021,14 +1075,51 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
 
             {/* Photo Framing inside each box */}
             <div className="border-t border-zinc-100 pt-5 space-y-3">
-              <h2 className="text-xs font-semibold text-zinc-900">How Photos Fit Each Box</h2>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-xs font-semibold text-zinc-900">How Photos Fit Each Box</h2>
+              </div>
+
+              {/* Lock / Unlock Aspect Ratio Toggle Button */}
+              <button
+                type="button"
+                aria-pressed={settings.lockAspectRatio}
+                onClick={onToggleAspectLock}
+                className={`w-full flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-colors cursor-pointer ${
+                  settings.lockAspectRatio
+                    ? 'border-blue-600 bg-blue-50/50 text-zinc-900'
+                    : 'border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {settings.lockAspectRatio ? (
+                    <Lock className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                  ) : (
+                    <Unlock className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                  )}
+                  <div className="min-w-0">
+                    <span className="block text-xs font-semibold text-zinc-900">
+                      {settings.lockAspectRatio ? 'Aspect Ratio Locked' : 'Aspect Ratio Unlocked'}
+                    </span>
+                    <span className="block text-[10px] text-zinc-500">
+                      {settings.lockAspectRatio
+                        ? 'Prevents accidental stretching during resize'
+                        : 'Free stretching allowed (may distort photos)'}
+                    </span>
+                  </div>
+                </div>
+                <span className="font-mono text-[10px] font-medium text-blue-700 shrink-0">
+                  {settings.lockAspectRatio ? 'Unlock' : 'Lock'}
+                </span>
+              </button>
+
               {isSimple ? (
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => onUpdateSettings({ fitMode: 'cover' })}
                     className={`rounded-lg border p-2.5 text-left transition-colors cursor-pointer ${
-                      settings.fitMode === 'cover'
+                      settings.fitMode === 'cover' ||
+                      (settings.lockAspectRatio && settings.fitMode === 'stretch')
                         ? 'border-blue-600 bg-blue-50/50'
                         : 'border-zinc-200 bg-white hover:border-zinc-300'
                     }`}
@@ -1062,25 +1153,43 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
                         { key: 'contain', label: 'Fit Whole' },
                         { key: 'stretch', label: 'Stretch' },
                       ] as { key: FitMode; label: string }[]
-                    ).map((mode) => (
-                      <button
-                        key={mode.key}
-                        type="button"
-                        onClick={() => onUpdateSettings({ fitMode: mode.key })}
-                        className={`rounded-md py-1.5 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
-                          settings.fitMode === mode.key
-                            ? 'bg-white text-zinc-900 shadow-xs'
-                            : 'text-zinc-600 hover:text-zinc-900'
-                        }`}
-                      >
-                        {mode.label}
-                      </button>
-                    ))}
+                    ).map((mode) => {
+                      const isStretchBlocked = mode.key === 'stretch' && settings.lockAspectRatio;
+                      const activeMode =
+                        settings.lockAspectRatio && settings.fitMode === 'stretch'
+                          ? 'cover'
+                          : settings.fitMode;
+                      return (
+                        <button
+                          key={mode.key}
+                          type="button"
+                          disabled={isStretchBlocked}
+                          title={
+                            isStretchBlocked
+                              ? 'Unlock aspect ratio above to enable Stretch'
+                              : undefined
+                          }
+                          onClick={() => onUpdateSettings({ fitMode: mode.key })}
+                          className={`rounded-md py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                            isStretchBlocked
+                              ? 'text-zinc-400 opacity-50 cursor-not-allowed'
+                              : activeMode === mode.key
+                                ? 'bg-white text-zinc-900 shadow-xs cursor-pointer'
+                                : 'text-zinc-600 hover:text-zinc-900 cursor-pointer'
+                          }`}
+                        >
+                          {mode.label}
+                        </button>
+                      );
+                    })}
                   </div>
                   <p className="text-[11px] text-zinc-500">
                     {settings.fitMode === 'cover' && 'Fills each slot cleanly with no empty bands (edges gently trimmed).'}
                     {settings.fitMode === 'contain' && 'Shows 100% of every image without cropping any edges.'}
-                    {settings.fitMode === 'stretch' && 'Stretches each image to match exact slot height and width.'}
+                    {settings.fitMode === 'stretch' &&
+                      (settings.lockAspectRatio
+                        ? 'Aspect ratio lock is active — unlock above to allow stretching.'
+                        : 'Stretches each image to match exact slot height and width.')}
                   </p>
                 </>
               )}

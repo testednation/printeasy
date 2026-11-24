@@ -11,7 +11,9 @@ import {
   HelpCircle,
   ImagePlus,
   Images,
+  Keyboard,
   Layers,
+  Lock,
   Maximize2,
   RotateCw,
   Ruler,
@@ -23,6 +25,7 @@ import {
 } from 'lucide-react';
 import type { ComputedPage, LayoutSettings, SheetGeometry, SlotPlacement } from '../types/sheet';
 import { formatDimensions, formatLength, getImageCssFilter, PAPER_DEFINITIONS } from '../utils/layoutEngine';
+import { useProcessedPreviewUrl } from '../utils/processedPreview';
 
 export type StarterGoal = 'repeatOne' | 'multiPhoto' | 'cards';
 
@@ -35,8 +38,10 @@ interface LivePreviewCanvasProps {
   selectedImageId: string | null;
   hasImages: boolean;
   canUndo: boolean;
+  shortcutsOpen: boolean;
   onUndo: () => void;
   onOpenHelp: () => void;
+  onToggleShortcuts: () => void;
   onQuickStartGoal: (goal: StarterGoal) => void;
   onSelectPage: (index: number) => void;
   onSwitchViewMode: (mode: 'single' | 'all') => void;
@@ -51,64 +56,6 @@ interface LivePreviewCanvasProps {
   onToggleSetting: (key: 'showRulers' | 'showResolutionOverlay') => void;
 }
 
-const rotatedPreviewCache = new Map<string, string>();
-
-function useRotatedPreviewUrl(dataUrl: string, rotation: 0 | 90 | 180 | 270): string {
-  const cacheKey = `${dataUrl.slice(0, 64)}_${dataUrl.length}_${rotation}`;
-  const [resolvedUrl, setResolvedUrl] = useState<string>(() => {
-    if (rotation === 0) return dataUrl;
-    return rotatedPreviewCache.get(cacheKey) || dataUrl;
-  });
-
-  useEffect(() => {
-    if (rotation === 0) {
-      setResolvedUrl(dataUrl);
-      return;
-    }
-    const existing = rotatedPreviewCache.get(cacheKey);
-    if (existing) {
-      setResolvedUrl(existing);
-      return;
-    }
-
-    let cancelled = false;
-    const img = new Image();
-    img.onload = () => {
-      if (cancelled) return;
-      const maxDim = 1200;
-      const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
-      const w = Math.max(1, Math.round(img.naturalWidth * scale));
-      const h = Math.max(1, Math.round(img.naturalHeight * scale));
-      const swapped = rotation === 90 || rotation === 270;
-
-      const canvas = document.createElement('canvas');
-      canvas.width = swapped ? h : w;
-      canvas.height = swapped ? w : h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.translate(canvas.width / 2, canvas.height / 2);
-      ctx.rotate((rotation * Math.PI) / 180);
-      ctx.drawImage(img, -w / 2, -h / 2, w, h);
-
-      const out = canvas.toDataURL('image/png');
-      if (rotatedPreviewCache.size > 60) {
-        const firstKey = rotatedPreviewCache.keys().next().value;
-        if (firstKey) rotatedPreviewCache.delete(firstKey);
-      }
-      rotatedPreviewCache.set(cacheKey, out);
-      if (!cancelled) setResolvedUrl(out);
-    };
-    img.src = dataUrl;
-
-    return () => {
-      cancelled = true;
-    };
-  }, [cacheKey, dataUrl, rotation]);
-
-  return resolvedUrl;
-}
 
 interface SlotContentProps {
   slot: SlotPlacement;
@@ -146,7 +93,11 @@ const SheetSlotView: React.FC<SlotContentProps> = ({
   onDragEndSlot,
 }) => {
   const image = slot.image;
-  const previewSrc = useRotatedPreviewUrl(image?.dataUrl || '', slot.effectiveRotation);
+  const previewSrc = useProcessedPreviewUrl(
+    image?.dataUrl || '',
+    slot.effectiveRotation,
+    image?.crop
+  );
 
   const leftPct = (slot.xMm / geometry.pageWidthMm) * 100;
   const topPct = (slot.yMm / geometry.pageHeightMm) * 100;
@@ -181,10 +132,12 @@ const SheetSlotView: React.FC<SlotContentProps> = ({
   const drawWidthPct = (slot.drawRectMm.width / slot.widthMm) * 100;
   const drawHeightPct = (slot.drawRectMm.height / slot.heightMm) * 100;
 
+  const effectiveFit =
+    settings.lockAspectRatio && settings.fitMode === 'stretch' ? 'cover' : settings.fitMode;
   const objectFitClass =
-    settings.fitMode === 'cover'
+    effectiveFit === 'cover'
       ? 'object-cover'
-      : settings.fitMode === 'stretch'
+      : effectiveFit === 'stretch'
         ? 'object-fill'
         : 'object-contain';
 
@@ -269,6 +222,17 @@ const SheetSlotView: React.FC<SlotContentProps> = ({
         >
           <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
           <span>{slot.effectiveDpi} DPI</span>
+        </div>
+      )}
+
+      {/* Visual Aspect Ratio Lock Indicator on Image */}
+      {!compact && !settings.showResolutionOverlay && settings.lockAspectRatio && (
+        <div
+          title="Aspect ratio locked — proportions protected from stretching"
+          aria-label="Aspect ratio locked"
+          className="absolute bottom-1.5 right-1.5 flex h-5 w-5 items-center justify-center rounded bg-zinc-900/65 text-white/95 shadow-xs backdrop-blur-[2px] pointer-events-none"
+        >
+          <Lock className="w-2.5 h-2.5" />
         </div>
       )}
 
@@ -471,8 +435,10 @@ export const LivePreviewCanvas: React.FC<LivePreviewCanvasProps> = ({
   selectedImageId,
   hasImages,
   canUndo,
+  shortcutsOpen,
   onUndo,
   onOpenHelp,
+  onToggleShortcuts,
   onQuickStartGoal,
   onSelectPage,
   onSwitchViewMode,
@@ -572,6 +538,37 @@ export const LivePreviewCanvas: React.FC<LivePreviewCanvasProps> = ({
     setManualZoom(next);
   };
 
+  // Keyboard zoom shortcuts (+, -, 0 to fit) when in Single Sheet view
+  useEffect(() => {
+    if (viewMode !== 'single') return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+
+      if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        const currentRatio =
+          zoomMode === 'fit' ? sheetDimensionsPx.effectiveZoomPercent / 100 : manualZoom;
+        const next = Math.max(0.25, Math.min(2.2, Math.round((currentRatio + 0.15) * 10) / 10));
+        setZoomMode('manual');
+        setManualZoom(next);
+      } else if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        const currentRatio =
+          zoomMode === 'fit' ? sheetDimensionsPx.effectiveZoomPercent / 100 : manualZoom;
+        const next = Math.max(0.25, Math.min(2.2, Math.round((currentRatio - 0.15) * 10) / 10));
+        setZoomMode('manual');
+        setManualZoom(next);
+      } else if (e.key === '0') {
+        e.preventDefault();
+        setZoomMode('fit');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [viewMode, zoomMode, manualZoom, sheetDimensionsPx.effectiveZoomPercent]);
+
   const handleFileDragOver = (e: React.DragEvent) => {
     if (dragSourceIdx !== null) return;
     if (e.dataTransfer.types.includes('Files')) {
@@ -670,6 +667,22 @@ export const LivePreviewCanvas: React.FC<LivePreviewCanvasProps> = ({
           >
             <HelpCircle className="w-3.5 h-3.5 text-blue-600" />
             <span className="hidden sm:inline">Guide</span>
+          </button>
+
+          {/* Toggleable Keyboard Shortcuts Overlay Button */}
+          <button
+            type="button"
+            onClick={onToggleShortcuts}
+            aria-pressed={shortcutsOpen}
+            title="Keyboard shortcuts (?)"
+            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              shortcutsOpen
+                ? 'border-blue-500 bg-blue-50/70 text-blue-700'
+                : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
+            }`}
+          >
+            <Keyboard className="w-3.5 h-3.5" />
+            <span className="hidden xl:inline">Shortcuts</span>
           </button>
 
           {/* Rulers & Resolution Specs toggles */}

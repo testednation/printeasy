@@ -5,11 +5,24 @@ import { ExportProgressModal } from './components/ExportProgressModal';
 import { LivePreviewCanvas, type StarterGoal } from './components/LivePreviewCanvas';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PWAInstallButton, PWAInstallModal } from './components/PWAInstallModal';
+import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { SidebarControls, type SidebarTab } from './components/SidebarControls';
 import { usePWAInstall } from './hooks/usePWAInstall';
-import type { GridPreset, GridSuggestion, ImageFilter, LayoutSettings, SheetImage } from './types/sheet';
+import type {
+  GridPreset,
+  GridSuggestion,
+  ImageCrop,
+  ImageFilter,
+  LayoutSettings,
+  SheetImage,
+} from './types/sheet';
 import { loadFilesAsSheetImages, loadSampleSheetImages } from './utils/imageLoader';
-import { computePages, computeSheetGeometry, DEFAULT_SETTINGS } from './utils/layoutEngine';
+import {
+  computePages,
+  computeSheetGeometry,
+  DEFAULT_SETTINGS,
+  getCroppedSourceDimensions,
+} from './utils/layoutEngine';
 import { exportSheetGridToPdf, type ExportProgress } from './utils/pdfExporter';
 import {
   downloadProjectBackup,
@@ -38,6 +51,7 @@ export default function App() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [offlineModalOpen, setOfflineModalOpen] = useState(false);
   const [helpModalOpen, setHelpModalOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const [isExporting, setIsExporting] = useState(false);
@@ -109,28 +123,78 @@ export default function App() {
     }
   }, [pages.length, activePageIndex]);
 
-  // Keyboard shortcuts: Ctrl+Z / Cmd+Z undo + ArrowLeft / ArrowRight page stepping
+  // Global keyboard shortcuts (Ctrl/Cmd+Z undo, arrows, ?, R, Del, V, Esc)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inTextInput =
+        target !== null &&
+        (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable);
+
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-        const target = e.target as HTMLElement | null;
         if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) return;
         e.preventDefault();
         handleUndo();
         return;
       }
 
-      const target = e.target as HTMLElement | null;
-      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
-      if (e.key === 'ArrowRight') {
+      if (e.key === 'Escape') {
+        if (shortcutsOpen) {
+          setShortcutsOpen(false);
+        } else if (helpModalOpen) {
+          setHelpModalOpen(false);
+        } else if (offlineModalOpen) {
+          setOfflineModalOpen(false);
+        } else if (selectedImageId) {
+          setSelectedImageId(null);
+        }
+        return;
+      }
+
+      if (inTextInput || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === '?') {
+        e.preventDefault();
+        setShortcutsOpen((prev) => !prev);
+      } else if (e.key === 'ArrowRight') {
         setActivePageIndex((prev) => Math.min(pages.length - 1, prev + 1));
       } else if (e.key === 'ArrowLeft') {
         setActivePageIndex((prev) => Math.max(0, prev - 1));
+      } else if (e.key.toLowerCase() === 'v') {
+        e.preventDefault();
+        setViewMode((prev) => (prev === 'single' ? 'all' : 'single'));
+      } else if (e.key.toLowerCase() === 'r' && selectedImageId) {
+        e.preventDefault();
+        pushHistory(settings, images);
+        setImages((prev) =>
+          prev.map((img) =>
+            img.id === selectedImageId
+              ? { ...img, rotation: (((img.rotation + 90) % 360) as 0 | 90 | 180 | 270) }
+              : img
+          )
+        );
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedImageId) {
+        e.preventDefault();
+        pushHistory(settings, images);
+        setImages((prev) => prev.filter((img) => img.id !== selectedImageId));
+        setSelectedImageId(null);
+        showToast('Removed selected photo (Ctrl+Z to undo)');
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [pages.length, handleUndo]);
+  }, [
+    pages.length,
+    handleUndo,
+    shortcutsOpen,
+    helpModalOpen,
+    offlineModalOpen,
+    selectedImageId,
+    pushHistory,
+    settings,
+    images,
+    showToast,
+  ]);
 
   const handleUpdateSettings = useCallback(
     (patch: Partial<LayoutSettings>) => {
@@ -282,6 +346,34 @@ export default function App() {
     [images, pushHistory, settings]
   );
 
+  const handleUpdateImageCrop = useCallback(
+    (id: string, crop: ImageCrop | undefined) => {
+      pushHistory(settings, images);
+      setImages((prev) =>
+        prev.map((img) => (img.id === id ? { ...img, crop } : img))
+      );
+      showToast(crop ? 'Applied custom crop to photo' : 'Reset photo to full frame');
+    },
+    [images, pushHistory, settings, showToast]
+  );
+
+  const handleToggleAspectLock = useCallback(() => {
+    pushHistory(settings, images);
+    setSettings((prev) => {
+      const nextLocked = !prev.lockAspectRatio;
+      return {
+        ...prev,
+        lockAspectRatio: nextLocked,
+        fitMode: nextLocked && prev.fitMode === 'stretch' ? 'cover' : prev.fitMode,
+      };
+    });
+    showToast(
+      settings.lockAspectRatio
+        ? 'Aspect ratio unlocked — stretching enabled'
+        : 'Aspect ratio locked — proportions protected'
+    );
+  }, [images, pushHistory, settings, showToast]);
+
   const handleSetAllCopies = useCallback(
     (copies: number) => {
       pushHistory(settings, images);
@@ -331,9 +423,10 @@ export default function App() {
 
     let rotatedCount = 0;
     const nextImages: SheetImage[] = images.map((img) => {
+      const cropped = getCroppedSourceDimensions(img);
       const swapped = img.rotation === 90 || img.rotation === 270;
-      const curW = swapped ? img.naturalHeight : img.naturalWidth;
-      const curH = swapped ? img.naturalWidth : img.naturalHeight;
+      const curW = swapped ? cropped.height : cropped.width;
+      const curH = swapped ? cropped.width : cropped.height;
       const imgIsLandscape = curW > curH * 1.02;
       const imgIsPortrait = curH > curW * 1.02;
 
@@ -599,12 +692,14 @@ export default function App() {
               onLoadSamples={() => void handleLoadSamples()}
               onUpdateImageCopies={handleUpdateImageCopies}
               onUpdateImageFilter={handleUpdateImageFilter}
+              onUpdateImageCrop={handleUpdateImageCrop}
               onSetAllCopies={handleSetAllCopies}
               onRotateImage={handleRotateImage}
               onRemoveImage={handleRemoveImage}
               onClearAllImages={handleClearAllImages}
               onReorderImages={handleReorderImages}
               onUpdateSettings={handleUpdateSettings}
+              onToggleAspectLock={handleToggleAspectLock}
               onApplyPreset={handleApplyPreset}
               onApplyGridSuggestion={handleApplyGridSuggestion}
               onAutoOrientAllImages={handleAutoOrientAllImages}
@@ -655,12 +750,14 @@ export default function App() {
                   onLoadSamples={() => void handleLoadSamples()}
                   onUpdateImageCopies={handleUpdateImageCopies}
                   onUpdateImageFilter={handleUpdateImageFilter}
+                  onUpdateImageCrop={handleUpdateImageCrop}
                   onSetAllCopies={handleSetAllCopies}
                   onRotateImage={handleRotateImage}
                   onRemoveImage={handleRemoveImage}
                   onClearAllImages={handleClearAllImages}
                   onReorderImages={handleReorderImages}
                   onUpdateSettings={handleUpdateSettings}
+                  onToggleAspectLock={handleToggleAspectLock}
                   onApplyPreset={handleApplyPreset}
                   onApplyGridSuggestion={handleApplyGridSuggestion}
                   onAutoOrientAllImages={handleAutoOrientAllImages}
@@ -690,8 +787,10 @@ export default function App() {
           selectedImageId={selectedImageId}
           hasImages={images.length > 0}
           canUndo={history.length > 0}
+          shortcutsOpen={shortcutsOpen}
           onUndo={handleUndo}
           onOpenHelp={() => setHelpModalOpen(true)}
+          onToggleShortcuts={() => setShortcutsOpen((prev) => !prev)}
           onQuickStartGoal={handleQuickStartGoal}
           onSelectPage={setActivePageIndex}
           onSwitchViewMode={setViewMode}
@@ -711,11 +810,16 @@ export default function App() {
         <div
           role="status"
           aria-live="polite"
-          className="fixed bottom-4 right-4 z-50 rounded-lg border border-zinc-800 bg-zinc-900 px-3.5 py-2 text-xs font-medium text-white shadow-lg"
+          className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 rounded-lg border border-zinc-800 bg-zinc-900 px-3.5 py-2 text-xs font-medium text-white shadow-lg whitespace-nowrap"
         >
           {toastMessage}
         </div>
       )}
+
+      <ShortcutsOverlay
+        isOpen={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
 
       <OfflineIndicator />
 

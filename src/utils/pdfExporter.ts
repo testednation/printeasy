@@ -58,26 +58,37 @@ function renderSlotImageToCanvasData(
 
   const rot = slot.effectiveRotation;
   const swapped = rot === 90 || rot === 270;
+  const crop = slot.image?.crop;
+  const hasCrop = Boolean(
+    crop && (crop.x > 0.002 || crop.y > 0.002 || crop.width < 0.996 || crop.height < 0.996)
+  );
 
-  // Step 1: Produce rotated source canvas if rotated
+  // Step 1: Extract manual crop (at full native pixel resolution) and/or rotate
   let sourceDrawable: HTMLImageElement | HTMLCanvasElement = imgEl;
-  let srcW = imgEl.naturalWidth;
-  let srcH = imgEl.naturalHeight;
+  const natW = imgEl.naturalWidth;
+  const natH = imgEl.naturalHeight;
+  const sx = hasCrop && crop ? Math.max(0, Math.min(natW - 1, Math.round(crop.x * natW))) : 0;
+  const sy = hasCrop && crop ? Math.max(0, Math.min(natH - 1, Math.round(crop.y * natH))) : 0;
+  const sw = hasCrop && crop ? Math.max(1, Math.min(natW - sx, Math.round(crop.width * natW))) : natW;
+  const sh = hasCrop && crop ? Math.max(1, Math.min(natH - sy, Math.round(crop.height * natH))) : natH;
 
-  if (rot !== 0) {
-    const rotCanvas = document.createElement('canvas');
-    rotCanvas.width = swapped ? imgEl.naturalHeight : imgEl.naturalWidth;
-    rotCanvas.height = swapped ? imgEl.naturalWidth : imgEl.naturalHeight;
-    const rCtx = rotCanvas.getContext('2d');
-    if (rCtx) {
-      rCtx.imageSmoothingEnabled = true;
-      rCtx.imageSmoothingQuality = 'high';
-      rCtx.translate(rotCanvas.width / 2, rotCanvas.height / 2);
-      rCtx.rotate((rot * Math.PI) / 180);
-      rCtx.drawImage(imgEl, -imgEl.naturalWidth / 2, -imgEl.naturalHeight / 2);
-      sourceDrawable = rotCanvas;
-      srcW = rotCanvas.width;
-      srcH = rotCanvas.height;
+  let srcW = sw;
+  let srcH = sh;
+
+  if (hasCrop || rot !== 0) {
+    const prepCanvas = document.createElement('canvas');
+    prepCanvas.width = swapped ? sh : sw;
+    prepCanvas.height = swapped ? sw : sh;
+    const pCtx = prepCanvas.getContext('2d');
+    if (pCtx) {
+      pCtx.imageSmoothingEnabled = true;
+      pCtx.imageSmoothingQuality = 'high';
+      pCtx.translate(prepCanvas.width / 2, prepCanvas.height / 2);
+      pCtx.rotate((rot * Math.PI) / 180);
+      pCtx.drawImage(imgEl, sx, sy, sw, sh, -sw / 2, -sh / 2, sw, sh);
+      sourceDrawable = prepCanvas;
+      srcW = prepCanvas.width;
+      srcH = prepCanvas.height;
     }
   }
 
@@ -99,7 +110,10 @@ function renderSlotImageToCanvasData(
     ctx.fillRect(0, 0, outW, outH);
   }
 
-  if (settings.fitMode === 'cover') {
+  const effectiveFitMode =
+    settings.lockAspectRatio && settings.fitMode === 'stretch' ? 'cover' : settings.fitMode;
+
+  if (effectiveFitMode === 'cover') {
     const srcAspect = srcW / srcH;
     const dstAspect = outW / outH;
     let cropW = srcW;
@@ -284,7 +298,11 @@ export async function exportSheetGridToPdf(
       if (!slot.image || !slot.drawRectMm) continue;
 
       const filterKey = slot.image.filter || 'none';
-      const cacheKey = `${slot.image.id}_${slot.effectiveRotation}_${filterKey}_${settings.fitMode}_${settings.dpi}_${slot.drawRectMm.width.toFixed(2)}x${slot.drawRectMm.height.toFixed(2)}`;
+      const cropKey = slot.image.crop
+        ? `${slot.image.crop.x.toFixed(4)}_${slot.image.crop.y.toFixed(4)}_${slot.image.crop.width.toFixed(4)}_${slot.image.crop.height.toFixed(4)}`
+        : 'full';
+      const fitKey = settings.lockAspectRatio && settings.fitMode === 'stretch' ? 'cover' : settings.fitMode;
+      const cacheKey = `${slot.image.id}_${slot.effectiveRotation}_${filterKey}_${cropKey}_${fitKey}_${settings.dpi}_${slot.drawRectMm.width.toFixed(2)}x${slot.drawRectMm.height.toFixed(2)}`;
       let cached = renderedCache.get(cacheKey);
 
       if (!cached) {
