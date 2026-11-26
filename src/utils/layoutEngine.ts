@@ -144,6 +144,8 @@ export const DEFAULT_SETTINGS: LayoutSettings = {
   rows: 3,
   marginMm: 10,
   gapMm: 5,
+  bleedEnabled: false,
+  bleedMm: 3,
   fitMode: 'cover',
   lockAspectRatio: true,
   autoRotate: false,
@@ -207,25 +209,41 @@ export function computeSheetGeometry(settings: LayoutSettings): SheetGeometry {
   const rawH = settings.paperSize === 'custom' ? Math.max(40, settings.customHeightMm) : baseDef.heightMm;
 
   const isLandscape = settings.orientation === 'landscape';
-  const pageWidthMm = isLandscape ? Math.max(rawW, rawH) : Math.min(rawW, rawH);
-  const pageHeightMm = isLandscape ? Math.min(rawW, rawH) : Math.max(rawW, rawH);
+  const trimPageWidthMm = isLandscape ? Math.max(rawW, rawH) : Math.min(rawW, rawH);
+  const trimPageHeightMm = isLandscape ? Math.min(rawW, rawH) : Math.max(rawW, rawH);
 
   const columns = Math.max(1, Math.min(12, Math.round(settings.columns)));
   const rows = Math.max(1, Math.min(16, Math.round(settings.rows)));
 
-  // Clamp margin and gap safely so cells always stay positive
-  const maxMargin = Math.min(pageWidthMm, pageHeightMm) * 0.35;
+  const bleedMm = settings.bleedEnabled
+    ? Math.max(0.5, Math.min(10, Number.isFinite(settings.bleedMm) ? settings.bleedMm : 3))
+    : 0;
+
+  // Add bleed margins beyond all 4 paper trim edges when bleed is enabled
+  const pageWidthMm = trimPageWidthMm + bleedMm * 2;
+  const pageHeightMm = trimPageHeightMm + bleedMm * 2;
+
+  // Clamp margin and gap safely inside the trim page so cells always stay positive
+  const maxMargin = Math.min(trimPageWidthMm, trimPageHeightMm) * 0.35;
   const marginMm = Math.max(0, Math.min(settings.marginMm, maxMargin));
 
-  const printableWidthMm = Math.max(10, pageWidthMm - marginMm * 2);
-  const printableHeightMm = Math.max(10, pageHeightMm - marginMm * 2);
+  const printableWidthMm = Math.max(10, trimPageWidthMm - marginMm * 2);
+  const printableHeightMm = Math.max(10, trimPageHeightMm - marginMm * 2);
 
   const maxGapX = columns > 1 ? (printableWidthMm * 0.6) / (columns - 1) : 30;
   const maxGapY = rows > 1 ? (printableHeightMm * 0.6) / (rows - 1) : 30;
-  const gapMm = Math.max(0, Math.min(settings.gapMm, maxGapX, maxGapY));
+  const minBleedGap = bleedMm > 0 && (columns > 1 || rows > 1) ? bleedMm * 2 : 0;
+  const gapMm = Math.max(0, Math.min(Math.max(settings.gapMm, minBleedGap), maxGapX, maxGapY));
 
   const cellWidthMm = (printableWidthMm - gapMm * (columns - 1)) / columns;
   const cellHeightMm = (printableHeightMm - gapMm * (rows - 1)) / rows;
+
+  const slotBleedMm =
+    bleedMm > 0
+      ? columns > 1 || rows > 1
+        ? Math.min(bleedMm, gapMm / 2)
+        : bleedMm
+      : 0;
 
   const targetCellPxW = Math.max(1, Math.round((cellWidthMm / 25.4) * settings.dpi));
   const targetCellPxH = Math.max(1, Math.round((cellHeightMm / 25.4) * settings.dpi));
@@ -235,6 +253,10 @@ export function computeSheetGeometry(settings: LayoutSettings): SheetGeometry {
   return {
     pageWidthMm,
     pageHeightMm,
+    trimPageWidthMm,
+    trimPageHeightMm,
+    bleedMm,
+    slotBleedMm,
     printableWidthMm,
     printableHeightMm,
     marginMm,
@@ -297,7 +319,8 @@ export function computeSlotImageMetrics(
   cellHeightMm: number,
   fitMode: FitMode,
   effectiveRotation: 0 | 90 | 180 | 270,
-  targetDpi: number
+  targetDpi: number,
+  slotBleedMm = 0
 ): {
   drawRectMm: { x: number; y: number; width: number; height: number };
   effectiveDpi: number;
@@ -310,6 +333,10 @@ export function computeSlotImageMetrics(
   const srcAspect = srcW / srcH;
   const cellAspect = cellWidthMm / cellHeightMm;
 
+  const bleedW = cellWidthMm + slotBleedMm * 2;
+  const bleedH = cellHeightMm + slotBleedMm * 2;
+  const bleedAspect = bleedW / bleedH;
+
   let drawW = cellWidthMm;
   let drawH = cellHeightMm;
   let drawX = 0;
@@ -317,10 +344,12 @@ export function computeSlotImageMetrics(
   let effectiveDpi = targetDpi;
 
   if (fitMode === 'stretch') {
-    drawW = cellWidthMm;
-    drawH = cellHeightMm;
-    const dpiX = srcW / (cellWidthMm / 25.4);
-    const dpiY = srcH / (cellHeightMm / 25.4);
+    drawX = -slotBleedMm;
+    drawY = -slotBleedMm;
+    drawW = bleedW;
+    drawH = bleedH;
+    const dpiX = srcW / (bleedW / 25.4);
+    const dpiY = srcH / (bleedH / 25.4);
     effectiveDpi = Math.round(Math.min(dpiX, dpiY));
   } else if (fitMode === 'contain') {
     if (srcAspect > cellAspect) {
@@ -334,17 +363,17 @@ export function computeSlotImageMetrics(
     }
     effectiveDpi = Math.round(srcW / (drawW / 25.4));
   } else {
-    // cover: fills entire cell, crops overflow symmetrically
-    drawW = cellWidthMm;
-    drawH = cellHeightMm;
-    if (srcAspect > cellAspect) {
-      // image is wider than cell -> vertical matches, horizontal cropped
-      const visibleSrcW = srcH * cellAspect;
-      effectiveDpi = Math.round(visibleSrcW / (cellWidthMm / 25.4));
+    // cover: fills entire bleed-expanded cell, crops overflow symmetrically beyond trim edge
+    drawX = -slotBleedMm;
+    drawY = -slotBleedMm;
+    drawW = bleedW;
+    drawH = bleedH;
+    if (srcAspect > bleedAspect) {
+      const visibleSrcW = srcH * bleedAspect;
+      effectiveDpi = Math.round(visibleSrcW / (bleedW / 25.4));
     } else {
-      // image is taller than cell -> horizontal matches, vertical cropped
-      const visibleSrcH = srcW / cellAspect;
-      effectiveDpi = Math.round(visibleSrcH / (cellHeightMm / 25.4));
+      const visibleSrcH = srcW / bleedAspect;
+      effectiveDpi = Math.round(visibleSrcH / (bleedH / 25.4));
     }
   }
 
@@ -418,8 +447,9 @@ export function computePages(
       const globalIndex = p * geometry.slotsPerPage + s;
       const row = Math.floor(s / geometry.columns);
       const col = s % geometry.columns;
-      const xMm = geometry.marginMm + col * (geometry.cellWidthMm + geometry.gapMm);
-      const yMm = geometry.marginMm + row * (geometry.cellHeightMm + geometry.gapMm);
+      const originOffsetMm = geometry.bleedMm + geometry.marginMm;
+      const xMm = originOffsetMm + col * (geometry.cellWidthMm + geometry.gapMm);
+      const yMm = originOffsetMm + row * (geometry.cellHeightMm + geometry.gapMm);
 
       const entry = expanded[globalIndex] || null;
       if (entry) {
@@ -438,7 +468,8 @@ export function computePages(
           geometry.cellHeightMm,
           effectiveFitMode,
           effectiveRotation,
-          settings.dpi
+          settings.dpi,
+          geometry.slotBleedMm
         );
         slots.push({
           slotIndex: s,

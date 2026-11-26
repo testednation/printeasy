@@ -786,6 +786,7 @@ export default function App() {
           activePageIndex={activePageIndex}
           selectedImageId={selectedImageId}
           hasImages={images.length > 0}
+          imageCount={images.length}
           canUndo={history.length > 0}
           shortcutsOpen={shortcutsOpen}
           onUndo={handleUndo}

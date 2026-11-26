@@ -209,8 +209,27 @@ function drawVectorGuides(
   if (settings.guideStyle === 'cropMarks') {
     doc.setLineWidth(0.22);
     doc.setLineDashPattern([], 0);
-    const tick = Math.min(3.5, Math.max(1.8, Math.min(geometry.marginMm * 0.55, 3.5)));
+    const outerSpace = geometry.marginMm + geometry.bleedMm;
+    const tick = Math.min(3.5, Math.max(1.8, Math.min(outerSpace * 0.55, 3.5)));
     const offset = Math.min(0.8, geometry.gapMm > 2 ? 0.6 : 0);
+
+    // Draw outer paper trim corner marks when bleed is enabled beyond trim edge
+    if (geometry.bleedMm > 0) {
+      const tx1 = geometry.bleedMm;
+      const ty1 = geometry.bleedMm;
+      const tx2 = geometry.bleedMm + geometry.trimPageWidthMm;
+      const ty2 = geometry.bleedMm + geometry.trimPageHeightMm;
+      const pTick = Math.min(geometry.bleedMm * 0.85, 3.2);
+
+      doc.line(0, ty1, pTick, ty1);
+      doc.line(tx1, 0, tx1, pTick);
+      doc.line(geometry.pageWidthMm - pTick, ty1, geometry.pageWidthMm, ty1);
+      doc.line(tx2, 0, tx2, pTick);
+      doc.line(0, ty2, pTick, ty2);
+      doc.line(tx1, geometry.pageHeightMm - pTick, tx1, geometry.pageHeightMm);
+      doc.line(geometry.pageWidthMm - pTick, ty2, geometry.pageWidthMm, ty2);
+      doc.line(tx2, geometry.pageHeightMm - pTick, tx2, geometry.pageHeightMm);
+    }
 
     for (const slot of slots) {
       if (!slot.image) continue;

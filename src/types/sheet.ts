@@ -43,6 +43,8 @@ export interface LayoutSettings {
   rows: number;
   marginMm: number;
   gapMm: number;
+  bleedEnabled: boolean;
+  bleedMm: number;
   fitMode: FitMode;
   lockAspectRatio: boolean;
   autoRotate: boolean;
@@ -73,6 +75,10 @@ export interface GridPreset {
 export interface SheetGeometry {
   pageWidthMm: number;
   pageHeightMm: number;
+  trimPageWidthMm: number;
+  trimPageHeightMm: number;
+  bleedMm: number;
+  slotBleedMm: number;
   printableWidthMm: number;
   printableHeightMm: number;
   marginMm: number;
